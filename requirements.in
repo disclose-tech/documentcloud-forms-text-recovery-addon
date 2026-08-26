@@ -1,0 +1,10 @@
+# Runtime dependencies. Edit this file, then regenerate the lock with:
+#
+#     pip-compile --strip-extras requirements.in -o requirements.txt
+#
+# requirements.txt is what the Add-On runner installs, so it stays committed.
+
+python-documentcloud==4.8.1
+requests
+pypdfium2==5.12.1
+pypdf==6.14.2

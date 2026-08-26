@@ -1,29 +1,25 @@
-# The title is the title of your Add-On
-title: Hello World
-# The description will be shown above the form when activating the Add-On
-description: This is an updated simple test add-on
-# Optional instructions field to describe how to use the Add-On
-instructions: This is a sample instruction.
-# Top level type should always be object
+title: Disclose Forms Text Recovery Add-on
+description: >
+  Recovers text typed into filled PDF form fields.
 type: object
-# How does this add-on accept documents
-# If more than one type is specified, the user will be prompted to choose one
 documents:
-  # By the currently selected documents
   - selected
-  # By the current search query
   - query
-# Properties are the fields for your form
 properties:
-  # the key is the name of the variable that will be returned to your code
-  name:
-    # the title is what will be shown as the form label
-    title: Name
-    # a string is text
-    type: string
-# Categories are what type of Add-On this is. Used to sort the Add-On in the Add-On menu. 
-categories: 
-  - file
-# Acceptable categories are premium, ai, export, bulk, file,  monitor, statistical, and extraction. 
-# You can read more about DocumentCloud Add-On categories here: https://www.documentcloud.org/help/add-ons#types-of-add-ons
-version: 2
+  dry_run:
+    title: Dry run?
+    type: boolean
+    default: false
+    description: "If selected, no page text is changed and no metadata is set. The full analysis still runs and a report of exactly what would have changed, with a before/after diff per page, is attached to this run for download. Run this first."
+  to_tag:
+    title: Tag processed documents?
+    type: boolean
+    default: true
+    description: "Adds forms_text_recovery_addon:v1 to each document once its pages are updated. Keep this on: it is what lets an interrupted run be resumed, by excluding already-processed documents from the search that feeds this Add-On."
+  max_documents:
+    title: Maximum documents this run
+    type: integer
+    default: 0
+    description: "Stops after this many documents"
+categories:
+  - extraction

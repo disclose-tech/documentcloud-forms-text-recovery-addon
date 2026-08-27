@@ -36,7 +36,8 @@ class FormsTextRecovery(AddOn):
 
     def validate(self):
         """Validate that we can run."""
-        if not self.get_document_count():
+        self.document_count = self.get_document_count()
+        if not self.document_count:
             self.set_message(
                 "It looks like no documents were selected. Search for some or "
                 "select them and run again."
@@ -178,21 +179,32 @@ class FormsTextRecovery(AddOn):
         to_tag = self.data.get("to_tag", True)
         limit = self.data.get("max_documents") or 0
 
+        # The workflow masks every line of the dispatched payload, so this is
+        # the only place a run can say what it was asked to do.
+        print(f"Options: dry_run={dry_run}, to_tag={to_tag}, max_documents={limit}")
+
         if dry_run:
             print("DRY RUN: nothing will be written.")
 
         self.report = Archive(self.id, {TAG_KEY: [TAG_VALUE]})
 
         documents = self.get_documents()
+        expected = self.document_count
         if limit > 0:
             print(f"Processing at most {limit} documents this run.")
             documents = itertools.islice(documents, limit)
+            expected = min(expected, limit)
 
         try:
-            processed, recovered = self.process(documents, dry_run, to_tag)
-            print(
-                f"Finished: {processed} documents, {recovered} field values recovered."
+            processed, recovered, tagged = self.process(
+                documents, dry_run, to_tag, expected
             )
+
+            counts = [f"{processed} documents", f"{recovered} field values recovered"]
+            if not dry_run:
+                counts.append(f"{tagged} tagged")
+            summary = f"Finished: {', '.join(counts)}."
+            print(summary)
 
             if dry_run and processed:
                 self.upload_dry_run()
@@ -200,13 +212,16 @@ class FormsTextRecovery(AddOn):
                     "Dry run complete. Nothing was written; the report of what "
                     "would have changed is attached to this run."
                 )
+            else:
+                self.set_message(summary)
         finally:
             self.report.discard()
 
-    def process(self, documents, dry_run, to_tag):
+    def process(self, documents, dry_run, to_tag, expected):
         """Work through the documents."""
         processed = 0
         recovered = 0
+        tagged = 0
 
         for document in documents:
             if document.status == "error":
@@ -240,14 +255,19 @@ class FormsTextRecovery(AddOn):
 
             if dry_run:
                 self.report.add(document, pages, report)
-                continue
+            else:
+                if pages:
+                    self.upload_pages(document, pages)
+                if to_tag:
+                    self.tag_document(document)
+                    tagged += 1
+                else:
+                    print("Not tagging: to_tag is off for this run.")
 
-            if pages:
-                self.upload_pages(document, pages)
-            if to_tag:
-                self.tag_document(document)
+            if expected:
+                self.set_progress(min(100, round(100 * processed / expected)))
 
-        return processed, recovered
+        return processed, recovered, tagged
 
 
 if __name__ == "__main__":

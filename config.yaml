@@ -14,7 +14,6 @@ properties:
   to_tag:
     title: Tag processed documents?
     type: boolean
-    default: true
     description: "Adds forms_text_recovery_addon:v1 to each document once its pages are updated."
   max_documents:
     title: Maximum documents this run

@@ -6,25 +6,25 @@
 #
 certifi==2026.7.22
     # via requests
-charset-normalizer==3.4.9
+charset-normalizer==3.5.1
     # via requests
-fastjsonschema==2.22.1
+fastjsonschema==2.22.2
     # via python-documentcloud
 future==1.0.0
     # via python-documentcloud
-idna==3.18
+idna==3.19
     # via requests
 listcrunch==1.0.1
     # via python-documentcloud
-pypdf==6.14.2
+pypdf==6.18.1
     # via -r requirements.in
-pypdfium2==5.12.1
+pypdfium2==5.13.0
     # via -r requirements.in
 python-dateutil==2.9.0.post0
     # via python-documentcloud
 python-documentcloud==4.8.1
     # via -r requirements.in
-python-squarelet==0.3.0
+python-squarelet==0.6.0
     # via python-documentcloud
 pyyaml==6.0.3
     # via python-documentcloud

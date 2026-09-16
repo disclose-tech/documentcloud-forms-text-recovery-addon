@@ -6,19 +6,33 @@ documents:
   - selected
   - query
 properties:
+  project:
+    title: Project ID
+    type: integer
+    description: "When a run has no selected documents and no search query (e.g. scheduled runs), the add-on searches this project for documents not yet processed."
   dry_run:
     title: Dry run?
     type: boolean
     default: false
     description: "If selected, no page text is changed and no metadata is set. A report is attached to the run for download."
-  to_tag:
-    title: Tag processed documents?
-    type: boolean
-    description: "Adds forms_text_recovery_addon:v1 to each document once its pages are updated."
   max_documents:
     title: Maximum documents this run
     type: integer
     default: 0
-    description: "Stops after this many documents"
+    description: "Stops after this many documents (0 = no limit)"
+  time_limit:
+    title: Time limit (minutes)
+    type: integer
+    default: 30
+    description: "Stops cleanly after this many minutes (0 = no limit)"
 categories:
   - extraction
+
+version: 2
+
+eventOptions:
+  name: project
+  events:
+    - hourly
+    - daily
+    - weekly

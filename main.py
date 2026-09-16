@@ -34,16 +34,39 @@ MAX_WAIT_TAG_DOCUMENT = 60
 class FormsTextRecovery(AddOn):
     """Recovers filled form field text into the page text layer."""
 
-    def validate(self):
-        """Validate that we can run."""
-        self.document_count = self.get_document_count()
-        if not self.document_count:
-            self.set_message(
-                "It looks like no documents were selected. Search for some or "
-                "select them and run again."
+    def select_documents(self):
+        """Pick the documents to work on and count them.
+
+        Manual runs act on the selected documents or the search query. When a
+        run has neither (a scheduled or standalone run) we search the configured
+        project for documents that still need processing, i.e. that are not yet
+        tagged with the current TAG_KEY/TAG_VALUE.
+
+        Returns (documents, expected_count, description). `documents` is always
+        iterable; `expected_count` can be 0.
+        """
+        if self.documents or self.query:
+            return (
+                self.get_documents(),
+                self.get_document_count(),
+                "the current selection/search",
             )
-            sys.exit(0)
-        return True
+
+        project = self.data.get("project")
+        if project:
+            query = f'project:{project} -data_{TAG_KEY}:{TAG_VALUE} +data_ocr_form_problem:"true" sort:created_at'
+            print(f"Searching for unprocessed documents: {query}")
+            results = self.client.documents.search(query)
+            return iter(results), results.count, f"project {project} (unprocessed)"
+
+        return iter(()), 0, "nothing"
+
+    def time_exceeded(self):
+        """True once the run has been going for longer than the time limit."""
+        return (
+            bool(self.time_limit)
+            and (time.monotonic() - self.start) > self.time_limit * 60
+        )
 
     def fetch_pdf(self, document):
         """Download the original PDF."""
@@ -169,35 +192,61 @@ class FormsTextRecovery(AddOn):
             os.remove(path)
 
     def main(self):
-        """Work through the selected documents."""
+        """Work through the documents that need processing."""
         self.client.session.headers.update({"User-Agent": USER_AGENT})
-
-        if not self.validate():
-            sys.exit(0)
+        self.start = time.monotonic()
 
         dry_run = self.data.get("dry_run", False)
-        to_tag = self.data.get("to_tag", True)
         limit = self.data.get("max_documents") or 0
+        self.time_limit = self.data.get("time_limit") or 0
 
-        # The workflow masks every line of the dispatched payload, so this is
-        # the only place a run can say what it was asked to do.
-        print(f"Options: dry_run={dry_run}, to_tag={to_tag}, max_documents={limit}")
+        origin = "scheduled" if self.event_id else "manual"
+        print(
+            f"Options: dry_run={dry_run}, max_documents={limit}, "
+            f"time_limit={self.time_limit} min ({origin} run)"
+        )
 
         if dry_run:
             print("DRY RUN: nothing will be written.")
 
-        self.report = Archive(self.id, {TAG_KEY: [TAG_VALUE]})
+        documents, expected, source = self.select_documents()
+        if not expected:
+            if self.documents or self.query:
+                message = (
+                    "It looks like no documents were selected. Search for some "
+                    "or select them and run again."
+                )
+            elif self.data.get("project"):
+                message = (
+                    f"Nothing to do: every document in project "
+                    f"{self.data['project']} is already processed "
+                    f"(tagged {TAG_KEY}:{TAG_VALUE})."
+                )
+            elif self.event_id:
+                message = (
+                    "This scheduled run has no Project ID set. Add a Project ID "
+                    "to the schedule so the add-on knows which documents to "
+                    "process."
+                )
+            else:
+                message = (
+                    "No documents selected, no search query, and no Project ID "
+                    "set. Select documents, run a search, or set a project."
+                )
+            print(message)
+            self.set_message(message)
+            sys.exit(0)
 
-        documents = self.get_documents()
-        expected = self.document_count
+        print(f"Targeting {source}: {expected} document(s).")
         if limit > 0:
             print(f"Processing at most {limit} documents this run.")
             documents = itertools.islice(documents, limit)
             expected = min(expected, limit)
 
+        self.report = Archive(self.id, {TAG_KEY: [TAG_VALUE]})
         try:
-            processed, recovered, tagged = self.process(
-                documents, dry_run, to_tag, expected
+            processed, recovered, tagged, touched = self.process(
+                documents, dry_run, expected
             )
 
             counts = [f"{processed} documents", f"{recovered} field values recovered"]
@@ -205,6 +254,12 @@ class FormsTextRecovery(AddOn):
                 counts.append(f"{tagged} tagged")
             summary = f"Finished: {', '.join(counts)}."
             print(summary)
+
+            if touched:
+                print(
+                    f"Touched {len(touched)} document(s): "
+                    f"{', '.join(str(doc_id) for doc_id in touched)}"
+                )
 
             if dry_run and processed:
                 self.upload_dry_run()
@@ -217,13 +272,21 @@ class FormsTextRecovery(AddOn):
         finally:
             self.report.discard()
 
-    def process(self, documents, dry_run, to_tag, expected):
+    def process(self, documents, dry_run, expected):
         """Work through the documents."""
         processed = 0
         recovered = 0
         tagged = 0
+        touched = []
 
         for document in documents:
+            if self.time_exceeded():
+                print(
+                    f"Time limit ({self.time_limit} min) reached; stopping. "
+                    "Remaining documents will be processed on the next run."
+                )
+                break
+
             if document.status == "error":
                 print(f"{document.id}  is in an error state; skipping it.")
                 continue
@@ -258,16 +321,19 @@ class FormsTextRecovery(AddOn):
             else:
                 if pages:
                     self.upload_pages(document, pages)
-                if to_tag:
-                    self.tag_document(document)
-                    tagged += 1
-                else:
-                    print("Not tagging: to_tag is off for this run.")
+                self.tag_document(document)
+                tagged += 1
+                touched.append(document.id)
+                print(
+                    f"Done {document.id}: "
+                    f"{'wrote page text, ' if pages else ''}"
+                    f"tagged {TAG_KEY}:{TAG_VALUE}"
+                )
 
             if expected:
                 self.set_progress(min(100, round(100 * processed / expected)))
 
-        return processed, recovered, tagged
+        return processed, recovered, tagged, touched
 
 
 if __name__ == "__main__":

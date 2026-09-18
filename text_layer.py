@@ -11,10 +11,7 @@ MIN_CHARBOX_SIZE = 1e-6
 
 
 def load(pdf_bytes):
-    """Open a PDF with the form environment initialised."""
-    pdf = pdfium.PdfDocument(pdf_bytes)
-    pdf.init_forms()
-    return pdf
+    return pdfium.PdfDocument(pdf_bytes)
 
 
 def extract_text_layer(pdf, page_number):

@@ -6,7 +6,9 @@ them into the page text along with their estimated word positions.
 """
 
 import itertools
+import json
 import os
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -15,11 +17,11 @@ import requests
 from documentcloud.addon import AddOn
 from documentcloud.exceptions import APIError
 
-import recover
 from dry_run import Archive
 
 TAG_KEY = "forms_text_recovery_addon"
 TAG_VALUE = "v1"
+FAILED_VALUE = "failed"
 
 USER_AGENT = "Disclose Forms Text Recovery Add-On"
 
@@ -29,6 +31,42 @@ PAGE_CHUNK_SIZE = 20
 RETRY_EVERY = 5
 MAX_WAIT_UPLOAD_PAGES = 300
 MAX_WAIT_TAG_DOCUMENT = 60
+ANALYZE_TIMEOUT = 300
+
+# Run recover.analyze in a separate process, so a native PDFium
+# abort on a malformed PDF can't take the whole run down.
+WORKER = os.path.join(os.path.dirname(__file__), "subprocess_worker.py")
+
+
+class AnalysisCrashed(Exception):
+    """The analysis subprocess died (e.g. a PDFium native abort) or timed out."""
+
+
+def analyze_isolated(pdf_bytes, keep_diff):
+    """Run `recover.analyze` in a subprocess and return its `(pages, report)`."""
+    cmd = [sys.executable, WORKER] + (["--keep-diff"] if keep_diff else [])
+    try:
+        result = subprocess.run(
+            cmd,
+            input=pdf_bytes,
+            capture_output=True,
+            timeout=ANALYZE_TIMEOUT,
+            check=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AnalysisCrashed(f"timed out after {ANALYZE_TIMEOUT}s") from exc
+    except subprocess.CalledProcessError as exc:
+        code = exc.returncode
+        how = f"killed by signal {-code}" if code < 0 else f"exited with code {code}"
+        tail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        detail = f": {tail[-1]}" if tail else ""
+        raise AnalysisCrashed(f"{how}{detail}") from exc
+
+    try:
+        pages, report = json.loads(result.stdout)
+    except ValueError as exc:  # JSONDecodeError, or not a 2-item result
+        raise AnalysisCrashed("worker returned no valid result") from exc
+    return pages, report
 
 
 class FormsTextRecovery(AddOn):
@@ -54,7 +92,12 @@ class FormsTextRecovery(AddOn):
 
         project = self.data.get("project")
         if project:
-            query = f'project:{project} -data_{TAG_KEY}:{TAG_VALUE} +data_ocr_form_problem:"true" sort:created_at'
+            query = (
+                f"project:{project} +status:success "
+                f"-data_{TAG_KEY}:{TAG_VALUE} "
+                f"-data_{TAG_KEY}:{FAILED_VALUE} "
+                f'+data_ocr_form_problem:"true" sort:created_at'
+            )
             print(f"Searching for unprocessed documents: {query}")
             results = self.client.documents.search(query)
             return iter(results), results.count, f"project {project} (unprocessed)"
@@ -134,7 +177,9 @@ class FormsTextRecovery(AddOn):
             last = chunk[-1]["page_number"]
             print(f"Updating page text (pages {first} to {last})")
 
-            if not self.wait_for(lambda: send(chunk), MAX_WAIT_UPLOAD_PAGES):
+            if not self.wait_for(
+                lambda chunk=chunk: send(chunk), MAX_WAIT_UPLOAD_PAGES
+            ):
                 print(
                     f"Failed to update pages {first} to {last}"
                     f" within {MAX_WAIT_UPLOAD_PAGES} seconds."
@@ -146,31 +191,39 @@ class FormsTextRecovery(AddOn):
                 sys.exit(1)
             print("Completed updating the page text")
 
-    def tag_document(self, document):
-        """Record that this document has been processed."""
+    def write_tag(self, document, value):
+        """Write TAG_KEY=value on the document, verifying it stuck.
+
+        Returns True once the value is stored, False if it could not be written
+        within MAX_WAIT_TAG_DOCUMENT seconds.
+        """
 
         def send():
             try:
                 self.client.put(
                     f"documents/{document.id}/data/{TAG_KEY}/",
-                    json={"values": [TAG_VALUE]},
+                    json={"values": [value]},
                 )
                 resp = self.client.get(f"documents/{document.id}/")
                 resp.raise_for_status()
             except APIError as exc:
-                print(f"Could not tag document: {exc}. Retrying...")
+                print(f"Could not write {TAG_KEY}:{value}: {exc}. Retrying...")
                 return False
 
             # A 200 is not enough: a concurrent full save() of a document read
             # before the tag writes the stale `data` back over it.
             stored = resp.json().get("data", {}).get(TAG_KEY)
-            if stored != [TAG_VALUE]:
+            if stored != [value]:
                 print(f"Tag did not stick (found {stored!r}). Retrying...")
                 return False
             return True
 
+        return self.wait_for(send, MAX_WAIT_TAG_DOCUMENT)
+
+    def tag_document(self, document):
+        """Record that this document has been processed."""
         print("Tagging document...")
-        if not self.wait_for(send, MAX_WAIT_TAG_DOCUMENT):
+        if not self.write_tag(document, TAG_VALUE):
             print(f"Failed to tag document within {MAX_WAIT_TAG_DOCUMENT} seconds.")
             self.set_message(
                 "Failed to set the tag for this document. "
@@ -178,6 +231,20 @@ class FormsTextRecovery(AddOn):
             )
             sys.exit(1)
         print("Finished tagging document")
+
+    def quarantine_document(self, document):
+        """Mark a document whose analysis crashed, so later runs skip it."""
+        print("Quarantining document (analysis crashed)...")
+        if not self.write_tag(document, FAILED_VALUE):
+            print(
+                f"Failed to quarantine document within {MAX_WAIT_TAG_DOCUMENT} seconds."
+            )
+            self.set_message(
+                "Failed to quarantine a document that crashed analysis. "
+                "Email info@documentcloud.org to debug."
+            )
+            sys.exit(1)
+        print(f"Quarantined document (tagged {TAG_KEY}:{FAILED_VALUE})")
 
     def upload_dry_run(self):
         """Attach the dry run output to this Add-On run, then delete it."""
@@ -297,7 +364,13 @@ class FormsTextRecovery(AddOn):
                 print(f"{document.id}  could not download the PDF: {exc}")
                 continue
 
-            pages, report = recover.analyze(pdf_bytes, keep_diff=dry_run)
+            try:
+                pages, report = analyze_isolated(pdf_bytes, keep_diff=dry_run)
+            except AnalysisCrashed as exc:  # native abort, timeout, or bad output
+                print(f"{document.id}  analysis failed ({exc}); skipping.")
+                if not dry_run:
+                    self.quarantine_document(document)
+                continue
 
             fields = sum(item.get("fields_recovered", 0) for item in report)
             skipped = sum(1 for item in report if item["action"] == "skip")

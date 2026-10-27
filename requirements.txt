@@ -4,7 +4,7 @@
 #
 #    pip-compile --output-file=requirements.txt --strip-extras requirements.in
 #
-certifi==2026.7.22
+certifi==2026.10.23
     # via requests
 charset-normalizer==3.5.1
     # via requests
@@ -16,7 +16,7 @@ idna==3.19
     # via requests
 listcrunch==1.0.1
     # via python-documentcloud
-pypdf==6.18.1
+pypdf==6.21.2
     # via -r requirements.in
 pypdfium2==5.13.0
     # via -r requirements.in
@@ -41,7 +41,7 @@ six==1.17.0
     # via python-dateutil
 token-bucket==0.4.0
     # via python-documentcloud
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   python-documentcloud
     #   python-squarelet
